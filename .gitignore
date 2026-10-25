@@ -1,0 +1,21 @@
+# secrets — NEVER commit (holds the panel password)
+.env
+
+# runtime paper-trading state (SQLite ledger lives in the Docker volume / data dir)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

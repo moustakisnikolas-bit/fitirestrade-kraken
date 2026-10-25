@@ -1,0 +1,5 @@
+ccxt==4.5.63
+pandas==2.2.2
+numpy==1.26.4
+fastapi==0.115.6
+uvicorn[standard]==0.34.0

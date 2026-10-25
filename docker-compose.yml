@@ -1,0 +1,49 @@
+# Fully isolated from ~/autotrade: own image, own network, own volume, unique container names.
+# Nothing here references autotrade's containers, DB, redis, networks, or the new-listing bot.
+services:
+  kfpaper_bot:
+    build: .
+    image: kfpaper-bot:latest
+    container_name: kfpaper_bot
+    restart: unless-stopped
+    environment:
+      KF_SYMBOLS: "SOL/USD:USD,AVAX/USD:USD,LINK/USD:USD"
+      KF_TIMEFRAME: "1h"
+      KF_LEVERAGE: "2"
+      KF_START_BALANCE: "200"
+      KF_POLL_SEC: "60"
+      KF_TAKER_FEE: "0.0005"
+      KF_MAX_POSITION_PCT: "0.5"
+      KF_ALLOW_SHORT: "true"
+      KF_DB: "data/paper.db"
+    volumes:
+      - kfpaper_data:/app/data
+    networks:
+      - kfpaper_net
+
+  kfpaper_panel:
+    image: kfpaper-bot:latest          # same image, different command
+    container_name: kfpaper_panel
+    restart: unless-stopped
+    command: ["uvicorn", "panel:app", "--host", "0.0.0.0", "--port", "8800"]
+    environment:
+      KF_DB: "data/paper.db"
+      KF_POLL_SEC: "60"
+      KF_PANEL_USER: "${KF_PANEL_USER:-admin}"
+      KF_PANEL_PASS: "${KF_PANEL_PASS:?set KF_PANEL_PASS in .env}"
+    volumes:
+      - kfpaper_data:/app/data
+    ports:
+      - "127.0.0.1:8800:8800"          # localhost-only; reach via SSH tunnel, never public
+    networks:
+      - kfpaper_net
+    depends_on:
+      - kfpaper_bot
+
+networks:
+  kfpaper_net:
+    name: kfpaper_net
+
+volumes:
+  kfpaper_data:
+    name: kfpaper_data
