@@ -3,3 +3,7 @@ pandas==2.2.2
 numpy==1.26.4
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+lightgbm==4.5.0
+scikit-learn==1.5.2
+joblib==1.4.2
+optuna==4.1.0

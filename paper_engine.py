@@ -35,6 +35,11 @@ class PaperFutures:
         c.execute("""CREATE TABLE IF NOT EXISTS positions(
             symbol TEXT PRIMARY KEY, side TEXT, entry REAL, qty REAL, notional REAL,
             leverage REAL, stop REAL, extreme REAL, opened_ts TEXT, bars INTEGER)""")
+        # migration: latest mark (current) price per open position
+        try:
+            c.execute("ALTER TABLE positions ADD COLUMN mark REAL")
+        except sqlite3.OperationalError:
+            pass
         c.execute("""CREATE TABLE IF NOT EXISTS trades(
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, symbol TEXT, side TEXT, action TEXT,
             price REAL, qty REAL, notional REAL, fee REAL, pnl REAL, balance REAL, reason TEXT)""")
@@ -120,6 +125,8 @@ class PaperFutures:
                                    opened_ts=_now(), bars=0)
         self._set_float("balance", self.balance)
         self._persist_position(sym)
+        self.db.execute("UPDATE positions SET mark=? WHERE symbol=?", (price, sym))
+        self.db.commit()
         self._log_trade(sym, side, "OPEN", price, qty, notional, fee, 0.0, reason)
 
     def close(self, sym: str, price: float, reason: str) -> float:
@@ -177,6 +184,9 @@ class PaperFutures:
 
     def snapshot(self, prices: dict[str, float]):
         eq = self.equity(prices)
+        for sym, px in prices.items():
+            if sym in self.positions:
+                self.db.execute("UPDATE positions SET mark=? WHERE symbol=?", (px, sym))
         self.db.execute("INSERT INTO equity(ts,balance,equity,open_positions) VALUES(?,?,?,?)",
                         (_now(), self.balance, eq, len(self.positions)))
         self.db.commit()

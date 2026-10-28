@@ -20,6 +20,7 @@ _lock = Lock()
 SCALAR_FIELDS = {
     "timeframe": str, "leverage": float, "start_balance": float, "taker_fee": float,
     "max_position_pct": float, "allow_short": bool, "poll_sec": int, "trading_enabled": bool,
+    "autopilot_apply": bool,   # nightly auto-apply of optimizer results (strict-guarded)
 }
 
 
@@ -34,6 +35,7 @@ def _env_defaults() -> dict:
         "allow_short": os.getenv("KF_ALLOW_SHORT", "true").lower() == "true",
         "poll_sec": int(os.getenv("KF_POLL_SEC", "60")),
         "trading_enabled": True,
+        "autopilot_apply": os.getenv("KF_AUTOPILOT_APPLY", "false").lower() == "true",
         "strategy": os.getenv("KF_STRATEGY", "ensemble"),
         "params": dict(DEFAULT_PARAMS),
         "risk": dict(DEFAULT_RISK),

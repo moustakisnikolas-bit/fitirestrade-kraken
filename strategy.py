@@ -64,6 +64,10 @@ DEFAULT_PARAMS: dict = {
     "profit_lock": 0.015,        # once +1.5% in profit, never give the gain fully back
     "trail": 0.012,              # trail 1.2% from the favourable extreme after profit_lock hit
     "max_hold_bars": 96,         # hard time-stop (e.g. 96 * 1h = 4 days) to free capital
+    # ML strategies (ml_meta / ml_dir); ignored by rule-based strategies
+    "ml_threshold": 0.55,        # min model confidence to take a trade
+    "ml_horizon": 24,            # label/forecast horizon in bars (used at train time)
+    "ml_size_scaling": 1.0,      # 1=scale position size by model confidence, 0=off
 }
 
 
@@ -87,6 +91,13 @@ def compute_indicators(df: pd.DataFrame, p: dict | None = None) -> pd.DataFrame:
     """Add indicator columns to an OHLCV frame (columns: open, high, low, close, volume).
     Returns a copy; rows with insufficient look-back carry NaN and are skipped by the caller."""
     p = {**DEFAULT_PARAMS, **(p or {})}
+    # Look-back windows must be integers: pandas .rolling()/.pct_change() and talib
+    # reject float windows. The panel saves numeric params as floats (e.g. 14.0),
+    # so coerce every window/period param here before it reaches an indicator.
+    for _k in ("ema_fast", "ema_slow", "rsi_len", "bb_len", "atr_len", "adx_len",
+               "roc_len", "z_len", "breakout_len", "max_hold_bars"):
+        if p.get(_k) is not None:
+            p[_k] = int(p[_k])
     out = df.copy()
     close, high, low = out["close"].to_numpy(float), out["high"].to_numpy(float), out["low"].to_numpy(float)
 

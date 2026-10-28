@@ -30,15 +30,17 @@ class RiskEngine:
         cap = 1.0 / denom if denom > 0 else self.r["max_leverage"]
         return max(1.0, min(self.r["max_leverage"], cap))
 
-    def size(self, equity: float, entry: float, stop: float) -> tuple[float, float, str]:
-        """Return (notional, leverage, reject_reason). notional=0 means 'do not open'."""
+    def size(self, equity: float, entry: float, stop: float, size_mult: float = 1.0) -> tuple[float, float, str]:
+        """Return (notional, leverage, reject_reason). notional=0 means 'do not open'.
+        size_mult (default 1.0) scales the risk budget by model confidence; the notional is still
+        hard-capped by the liquidation-safe leverage, so sizing never becomes unsafe."""
         if equity <= 0 or entry <= 0:
             return 0.0, 0.0, "no equity"
         dist = abs(entry - stop) / entry
         if dist < self.r["min_stop_dist_pct"]:
             return 0.0, 0.0, f"stop too tight ({dist*100:.2f}%)"
         lev = self.liq_safe_leverage(dist)
-        risk_budget = equity * self.r["risk_pct_per_trade"]
+        risk_budget = equity * self.r["risk_pct_per_trade"] * max(0.0, size_mult)
         notional = min(risk_budget / dist, equity * lev)       # risk-based, capped by safe leverage
         if notional <= 0:
             return 0.0, 0.0, "zero notional"

@@ -64,7 +64,8 @@ def try_enter(broker, risk, sym, direction, stop, price, equity, meta):
         pos = None
     if pos:
         return
-    notional, lev, why = risk.size(equity, price, stop)
+    conf = float((meta or {}).get("conf", 1.0)) if isinstance(meta, dict) else 1.0
+    notional, lev, why = risk.size(equity, price, stop, conf)
     if notional <= 0:
         log(f"  {sym} entry rejected: {why}"); return
     notional, reason = risk.admit(broker.positions, equity, notional)   # clamp to exposure cap
@@ -96,6 +97,7 @@ def main():
             p = cfg["params"]
             risk = RiskEngine(cfg["risk"])
             strat = get_strategy(cfg["strategy"], p)
+            strat.timeframe = cfg["timeframe"]
 
             prices, rows = {}, {}
             for sym in cfg["symbols"]:
@@ -138,6 +140,7 @@ def main():
                 bar_t = row.name
                 if last_bar.get(sym) != bar_t:
                     last_bar[sym] = bar_t
+                    strat.symbol = sym
                     direction, stop, meta = strat.signal(row, price)
                     block = (not cfg["trading_enabled"]) or halted or closed or direction == "flat" or stop is None
                     if not block:

@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from strategy import compute_indicators, ensemble_decide, DEFAULT_PARAMS
+from mlcommon import build_features, load_model, size_mult
 
 
 def _atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
@@ -27,6 +28,9 @@ class Strategy:
 
     def __init__(self, params: dict):
         self.p = {**DEFAULT_PARAMS, **(params or {})}
+        # the bot/backtester set these before calling so per-symbol models can be loaded
+        self.symbol: str | None = None
+        self.timeframe: str | None = None
 
     def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
@@ -76,7 +80,99 @@ class BreakoutStrategy(Strategy):
         return "flat", None, {}
 
 
-REGISTRY = {s.name: s for s in (EnsembleStrategy, BreakoutStrategy)}
+class _MLBase(Strategy):
+    """Shared base for ML strategies. Loads a per-(symbol, timeframe) LightGBM model lazily; if
+    no model is trained yet it stays flat (and warns once) so the bot never crashes."""
+    name = "ml_base"
+    mode = "meta"
+
+    def __init__(self, params: dict):
+        super().__init__(params)
+        self._warned = False
+
+    def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
+        return build_features(df, self.p)
+
+    def _model(self):
+        if not self.symbol or not self.timeframe:
+            return None
+        return load_model(self.symbol, self.timeframe, self.mode)
+
+    def _feats(self, m, row):
+        """Return the feature vector in the model's order, or None if any value is missing."""
+        vals = []
+        for f in m["features"]:
+            v = row.get(f)
+            if v is None or pd.isna(v):
+                return None
+            vals.append(float(v))
+        return [vals]
+
+    def _flat(self, why):
+        if not self._warned:
+            print(f"  [{self.name}] {self.symbol} {self.timeframe}: {why}", flush=True)
+            self._warned = True
+        return "flat", None, {"ml": why}
+
+    def _atr(self, row, price):
+        a = row.get("atr")
+        return float(a) if (a is not None and not pd.isna(a)) else price * 0.03
+
+
+class MetaStrategy(_MLBase):
+    """Meta-labeling: the ensemble proposes; the model decides whether to take it + how big."""
+    name = "ml_meta"
+    mode = "meta"
+
+    def signal(self, row, price):
+        m = self._model()
+        if m is None:
+            return self._flat("no meta model (train it)")
+        dec = ensemble_decide(row, self.p)
+        if dec.direction == "HOLD":
+            return "flat", None, {}
+        X = self._feats(m, row)
+        if X is None:
+            return "flat", None, {}
+        prob = float(m["model"].predict_proba(X)[0][1])
+        thr = self.p.get("ml_threshold", 0.55)
+        if prob < thr:
+            return "flat", None, {"p_win": round(prob, 3)}
+        conf = size_mult(prob, thr, bool(self.p.get("ml_size_scaling", 1.0)))
+        atr = self._atr(row, price)
+        meta = {"p_win": round(prob, 3), "conf": conf, "regime": dec.regime}
+        if dec.direction == "BUY":
+            return "long", price - self.p["stop_atr"] * atr, meta
+        return "short", price + self.p["stop_atr"] * atr, meta
+
+
+class DirStrategy(_MLBase):
+    """Direct direction: the model predicts up/flat/down and proposes the trade itself."""
+    name = "ml_dir"
+    mode = "dir"
+
+    def signal(self, row, price):
+        m = self._model()
+        if m is None:
+            return self._flat("no dir model (train it)")
+        X = self._feats(m, row)
+        if X is None:
+            return "flat", None, {}
+        pr = m["model"].predict_proba(X)[0]   # [flat, up, down]
+        cls = int(np.argmax(pr))
+        conf_raw = float(pr[cls])
+        thr = self.p.get("ml_threshold", 0.55)
+        if cls == 0 or conf_raw < thr:
+            return "flat", None, {"p": round(conf_raw, 3)}
+        conf = size_mult(conf_raw, thr, bool(self.p.get("ml_size_scaling", 1.0)))
+        atr = self._atr(row, price)
+        meta = {"p": round(conf_raw, 3), "conf": conf, "cls": ("up" if cls == 1 else "down")}
+        if cls == 1:
+            return "long", price - self.p["stop_atr"] * atr, meta
+        return "short", price + self.p["stop_atr"] * atr, meta
+
+
+REGISTRY = {s.name: s for s in (EnsembleStrategy, BreakoutStrategy, MetaStrategy, DirStrategy)}
 
 
 def get_strategy(name: str, params: dict) -> Strategy:
