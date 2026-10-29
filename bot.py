@@ -56,7 +56,7 @@ def manage_open(broker, sym, row, price, p) -> bool:
     return False
 
 
-def try_enter(broker, risk, sym, direction, stop, price, equity, meta):
+def try_enter(broker, risk, sym, direction, stop, price, equity, meta, peak=None):
     """Strategy proposed direction+stop; risk engine sizes + gates; broker opens."""
     pos = broker.positions.get(sym)
     if pos and pos["side"] != direction:
@@ -64,11 +64,14 @@ def try_enter(broker, risk, sym, direction, stop, price, equity, meta):
         pos = None
     if pos:
         return
+    scale, pause = risk.entry_scale(equity, peak)           # #2 equity-curve brake
+    if pause:
+        log(f"  {sym} entry paused: equity brake (drawdown)"); return
     conf = float((meta or {}).get("conf", 1.0)) if isinstance(meta, dict) else 1.0
-    notional, lev, why = risk.size(equity, price, stop, conf)
+    notional, lev, why = risk.size(equity, price, stop, conf * scale)
     if notional <= 0:
         log(f"  {sym} entry rejected: {why}"); return
-    notional, reason = risk.admit(broker.positions, equity, notional)   # clamp to exposure cap
+    notional, reason = risk.admit(broker.positions, equity, notional, direction)  # exposure + corr cap
     if notional <= 0:
         log(f"  {sym} entry blocked: {reason}"); return
     broker.open(sym, direction, price, notional, round(lev, 2), stop, f"{meta} lev={lev:.1f}")
@@ -144,7 +147,8 @@ def main():
                     direction, stop, meta = strat.signal(row, price)
                     block = (not cfg["trading_enabled"]) or halted or closed or direction == "flat" or stop is None
                     if not block:
-                        try_enter(broker, risk, sym, direction, stop, price, broker.equity(prices), meta)
+                        try_enter(broker, risk, sym, direction, stop, price, broker.equity(prices),
+                                  meta, broker.peak_equity())
                     tag = "" if cfg["trading_enabled"] else " (PAUSED)"
                     tag += f" (HALTED:{hreason})" if halted else ""
                     log(f"  {sym} bar {bar_t:%m-%d %H:%M} px {price:.4f} -> {direction}{tag} {meta}")

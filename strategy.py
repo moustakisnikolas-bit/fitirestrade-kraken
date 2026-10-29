@@ -68,6 +68,16 @@ DEFAULT_PARAMS: dict = {
     "ml_threshold": 0.55,        # min model confidence to take a trade
     "ml_horizon": 24,            # label/forecast horizon in bars (used at train time)
     "ml_size_scaling": 1.0,      # 1=scale position size by model confidence, 0=off
+    # PROACTIVE GUARDS (applied to EVERY strategy via guards.py; see docs/ml/phase-6-proactive-guards.md)
+    # #1 regime filter — refuse new entries in bad-to-trade regimes
+    "guard_regime": 1.0,         # 1=on, 0=off
+    "guard_adx_min": 18.0,       # ADX below this = deep chop -> block (unless breakout)
+    "guard_atr_floor": 0.003,    # ATR/price below this = dead market -> block
+    "guard_atr_ceiling": 0.08,   # ATR/price above this = too wild -> block
+    # #3 volatility-target sizing — shrink size when vol is above target
+    "guard_vol_target": 1.0,     # 1=on, 0=off
+    "guard_atr_target": 0.02,    # target ATR/price for full size
+    "guard_vol_floor": 0.35,     # never shrink size below this fraction
 }
 
 

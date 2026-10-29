@@ -131,18 +131,22 @@ def _manage(sim: _Sim, sym, row, price, p) -> bool:
     return False
 
 
-def _enter(sim: _Sim, risk: RiskEngine, sym, direction, stop, price, equity, conf: float = 1.0):
-    """Mirror of bot.try_enter: flip, risk-size (optionally confidence-scaled), admit, open."""
+def _enter(sim: _Sim, risk: RiskEngine, sym, direction, stop, price, equity, conf: float = 1.0,
+           peak: float | None = None):
+    """Mirror of bot.try_enter: equity brake, flip, risk-size (conf*scale), corr+exposure admit, open."""
     pos = sim.positions.get(sym)
     if pos and pos["side"] != direction:
         sim.close(sym, price, f"flip->{direction}")
         pos = None
     if pos:
         return
-    notional, lev, why = risk.size(equity, price, stop, conf)
+    scale, pause = risk.entry_scale(equity, peak)           # #2 equity-curve brake
+    if pause:
+        return
+    notional, lev, why = risk.size(equity, price, stop, conf * scale)
     if notional <= 0:
         return
-    notional, reason = risk.admit(sim.positions, equity, notional)
+    notional, reason = risk.admit(sim.positions, equity, notional, direction)  # exposure + corr cap
     if notional <= 0:
         return
     sim.open(sym, direction, price, notional, round(lev, 2), stop)
@@ -237,6 +241,7 @@ def run_backtest(symbol: str, timeframe: str, strategy: str, params: dict, risk_
     warmup = int(max([params.get(k, 0) or 0 for k in win_keys] + [50])) + 5
 
     curve: list = []
+    peak = start_balance                      # running equity peak for the #2 equity-curve brake
     n = len(ind)
     for i in range(min(warmup, n), n):
         row = ind.iloc[i]
@@ -245,13 +250,15 @@ def run_backtest(symbol: str, timeframe: str, strategy: str, params: dict, risk_
             continue
         _apply_funding(sim, symbol, price, rate, tf_hours)
         closed = _manage(sim, symbol, row, price, params)
+        eq_now = sim.equity({symbol: price})
+        peak = max(peak, eq_now)
         try:
             direction, stop, meta = strat.signal(row, price)
         except Exception:
             direction, stop, meta = "flat", None, {}
         if not (closed or direction == "flat" or stop is None):
             conf = float((meta or {}).get("conf", 1.0))
-            _enter(sim, risk, symbol, direction, stop, price, sim.equity({symbol: price}), conf)
+            _enter(sim, risk, symbol, direction, stop, price, eq_now, conf, peak)
         curve.append((ind.index[i].isoformat(), sim.equity({symbol: price})))
 
     # mark-to-market: force-close whatever is open at the final price (so metrics are complete)
@@ -315,12 +322,15 @@ def simulate_portfolio(frames: dict, common, strategy: str, params: dict, risk_c
     sim = _Sim(start_balance, taker_fee, risk.r["maint_margin"])
 
     curve, syms = [], list(frames)
+    peak = start_balance                      # running equity peak for the #2 equity-curve brake
     for i in range(max(i0, 0), i1):
         pricemap = {}
         for sym in syms:
             price = float(frames[sym]["close"].iat[i])
             if not math.isnan(price):
                 pricemap[sym] = price
+        eq_now = sim.equity(pricemap) if pricemap else sim.balance
+        peak = max(peak, eq_now)
         for sym in list(pricemap):
             row = frames[sym].iloc[i]
             price = pricemap[sym]
@@ -332,7 +342,7 @@ def simulate_portfolio(frames: dict, common, strategy: str, params: dict, risk_c
                 direction, stop, meta = "flat", None, {}
             if not (closed or direction == "flat" or stop is None):
                 conf = float((meta or {}).get("conf", 1.0))
-                _enter(sim, risk, sym, direction, stop, price, sim.equity(pricemap), conf)
+                _enter(sim, risk, sym, direction, stop, price, sim.equity(pricemap), conf, peak)
         if pricemap:
             curve.append((common[i].isoformat(), sim.equity(pricemap)))
     if sim.positions and i1 > i0:

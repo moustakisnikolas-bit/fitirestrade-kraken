@@ -16,6 +16,12 @@ DEFAULT_RISK = {
     "min_stop_dist_pct": 0.003,     # reject entries whose stop is < 0.3% away (noise)
     "liq_buffer": 0.5,              # stop must sit within 50% of the distance to liquidation
     "maint_margin": 0.005,          # exchange maintenance margin (Kraken ~0.5%)
+    # PROACTIVE GUARDS (see docs/ml/phase-6-proactive-guards.md)
+    "equity_brake": True,           # #2 graded de-risk as drawdown-from-peak deepens
+    "brake_soft_dd": 0.06,          #    start shrinking NEW-entry size at 6% below peak
+    "brake_pause_dd": 0.12,         #    PAUSE new entries entirely at 12% below peak
+    "brake_floor": 0.3,             #    smallest size multiplier inside the taper zone
+    "max_same_direction": 1,        # #4 correlation cap: max concurrent same-direction positions
 }
 
 
@@ -46,13 +52,38 @@ class RiskEngine:
             return 0.0, 0.0, "zero notional"
         return notional, lev, ""
 
-    def admit(self, positions: dict, equity: float, notional: float) -> tuple[float, str]:
+    def entry_scale(self, equity: float, peak: float | None) -> tuple[float, bool]:
+        """#2 Equity-curve brake. Return (size_mult, pause). As equity falls below its peak we
+        PROACTIVELY shrink new-entry size (graded), and once the drawdown reaches brake_pause_dd we
+        pause new entries entirely — long before the hard max_drawdown halt. Flat curve => (1.0, False)."""
+        if not self.r.get("equity_brake", True) or not peak or peak <= 0 or equity <= 0:
+            return 1.0, False
+        dd = max(0.0, 1.0 - equity / peak)                 # drawdown fraction from peak (>=0)
+        soft = self.r.get("brake_soft_dd", 0.06)
+        pause = self.r.get("brake_pause_dd", 0.12)
+        floor = self.r.get("brake_floor", 0.3)
+        if dd >= pause:
+            return 0.0, True
+        if dd <= soft:
+            return 1.0, False
+        frac = (dd - soft) / max(pause - soft, 1e-9)        # 0 at soft -> 1 at pause
+        return float(1.0 - frac * (1.0 - floor)), False
+
+    def admit(self, positions: dict, equity: float, notional: float,
+              direction: str | None = None) -> tuple[float, str]:
         """Return the allowed notional (CLAMPED to fit the exposure cap), or 0 with a reason.
         We trim an oversized position to fit rather than refusing to trade at all."""
         if len(positions) >= self.r["max_concurrent"]:
             return 0.0, "max concurrent positions"
         if equity <= 0:
             return 0.0, "no equity"
+        # #4 correlation cap: our majors move together, so N same-direction positions are really one
+        # oversized bet. Cap concurrent same-direction exposure.
+        msd = int(self.r.get("max_same_direction", 0) or 0)
+        if direction and msd:
+            same = sum(1 for p in positions.values() if p.get("side") == direction)
+            if same >= msd:
+                return 0.0, f"correlation cap ({direction} x{same})"
         gross = sum(p["notional"] for p in positions.values())
         headroom = equity * self.r["max_total_exposure_pct"] - gross
         if headroom <= equity * 0.02:                      # need at least 2% equity of room to bother

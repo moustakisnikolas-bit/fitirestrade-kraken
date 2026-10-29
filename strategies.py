@@ -14,6 +14,7 @@ import pandas as pd
 
 from strategy import compute_indicators, ensemble_decide, DEFAULT_PARAMS
 from mlcommon import build_features, load_model, size_mult
+from guards import regime_entry_ok, vol_target_mult
 
 
 def _atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
@@ -35,8 +36,28 @@ class Strategy:
     def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
 
-    def signal(self, row: pd.Series, price: float):
+    def _signal(self, row: pd.Series, price: float):
+        """Raw strategy decision -> (direction, stop|None, meta). Subclasses implement this."""
         raise NotImplementedError
+
+    def signal(self, row: pd.Series, price: float):
+        """Public entry point: raw signal + PROACTIVE GUARDS (#1 regime filter, #3 vol-target
+        sizing) applied uniformly to every strategy. Guards only ever block an entry or shrink its
+        size — they never create or flip a trade. Shared by the live bot and the backtester."""
+        direction, stop, meta = self._signal(row, price)
+        if direction not in ("long", "short"):
+            return direction, stop, meta
+        ok, why = regime_entry_ok(row, price, self.p)
+        if not ok:
+            m = dict(meta or {}); m["blocked"] = why
+            return "flat", None, m
+        vm = vol_target_mult(row, price, self.p)
+        if vm != 1.0:
+            m = dict(meta or {})
+            m["conf"] = float(m.get("conf", 1.0)) * vm
+            m["vol_mult"] = round(vm, 3)
+            meta = m
+        return direction, stop, meta
 
 
 class EnsembleStrategy(Strategy):
@@ -47,7 +68,7 @@ class EnsembleStrategy(Strategy):
     def prepare(self, df):
         return compute_indicators(df, self.p)
 
-    def signal(self, row, price):
+    def _signal(self, row, price):
         dec = ensemble_decide(row, self.p)
         atr = row["atr"] if not pd.isna(row.get("atr")) else price * 0.03
         if dec.direction == "BUY":
@@ -70,7 +91,7 @@ class BreakoutStrategy(Strategy):
         d["don_lo"] = d["low"].rolling(n).min().shift(1)
         return d
 
-    def signal(self, row, price):
+    def _signal(self, row, price):
         atr = row["atr"] if not pd.isna(row.get("atr")) else price * 0.03
         s = self.p.get("stop_atr", 3.0)
         if not pd.isna(row.get("don_hi")) and price > row["don_hi"]:
@@ -124,7 +145,7 @@ class MetaStrategy(_MLBase):
     name = "ml_meta"
     mode = "meta"
 
-    def signal(self, row, price):
+    def _signal(self, row, price):
         m = self._model()
         if m is None:
             return self._flat("no meta model (train it)")
@@ -151,7 +172,7 @@ class DirStrategy(_MLBase):
     name = "ml_dir"
     mode = "dir"
 
-    def signal(self, row, price):
+    def _signal(self, row, price):
         m = self._model()
         if m is None:
             return self._flat("no dir model (train it)")
