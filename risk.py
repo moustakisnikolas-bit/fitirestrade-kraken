@@ -21,6 +21,9 @@ DEFAULT_RISK = {
     "brake_soft_dd": 0.06,          #    start shrinking NEW-entry size at 6% below peak
     "brake_pause_dd": 0.12,         #    PAUSE new entries entirely at 12% below peak
     "brake_floor": 0.3,             #    smallest size multiplier inside the taper zone
+    "brake_peak_hours": 120.0,      #    drawdown is measured vs a ROLLING peak over this window
+                                    #    (not the all-time high), so the brake releases once equity
+                                    #    stabilises instead of freezing forever. 0 = all-time peak.
     "max_same_direction": 1,        # #4 correlation cap: max concurrent same-direction positions
 }
 

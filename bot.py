@@ -102,6 +102,12 @@ def main():
             strat = get_strategy(cfg["strategy"], p)
             strat.timeframe = cfg["timeframe"]
 
+            try:                                       # keep live sentiment fresh (TTL-throttled)
+                import sentiment as _sent
+                _sent.topup(cfg["symbols"], cfg["timeframe"], ex)
+            except Exception:
+                pass
+
             prices, rows = {}, {}
             for sym in cfg["symbols"]:
                 if sym not in ex.markets:
@@ -109,6 +115,7 @@ def main():
                 raw = ex.fetch_ohlcv(sym, cfg["timeframe"], limit=300)
                 if not raw or len(raw) < 60:
                     continue
+                strat.symbol = sym                      # set BEFORE prepare (sentiment needs it)
                 ind = strat.prepare(to_df(raw).iloc[:-1])
                 rows[sym] = ind.iloc[-1]
                 prices[sym] = float(ind.iloc[-1]["close"])
@@ -147,8 +154,9 @@ def main():
                     direction, stop, meta = strat.signal(row, price)
                     block = (not cfg["trading_enabled"]) or halted or closed or direction == "flat" or stop is None
                     if not block:
+                        peak = broker.recent_peak(risk.r.get("brake_peak_hours", 120.0))
                         try_enter(broker, risk, sym, direction, stop, price, broker.equity(prices),
-                                  meta, broker.peak_equity())
+                                  meta, peak)
                     tag = "" if cfg["trading_enabled"] else " (PAUSED)"
                     tag += f" (HALTED:{hreason})" if halted else ""
                     log(f"  {sym} bar {bar_t:%m-%d %H:%M} px {price:.4f} -> {direction}{tag} {meta}")

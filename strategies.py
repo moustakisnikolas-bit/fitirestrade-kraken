@@ -78,6 +78,63 @@ class EnsembleStrategy(Strategy):
         return "flat", None, {"score": dec.score, "regime": dec.regime}
 
 
+class SentEnsembleStrategy(EnsembleStrategy):
+    """Ensemble + SPECIALIZED SENTIMENT overlay (funding-rate crowding, spot-perp basis, fear&greed).
+    Sentiment does three things, each validated via backtest before go-live (docs/ml/phase-7):
+      * TILT   — when sentiment agrees with the trade, lower the entry bar so a milder ensemble
+                 signal can trigger (sentiment helps you enter); when it disagrees, keep the bar.
+      * FADE   — when funding is extremely crowded in the SAME direction as the trade (squeeze
+                 risk), shrink size (or veto). Contrarian at the extremes.
+      * SIZE   — scale confidence up when sentiment agrees, down when it disagrees.
+    Falls back to the plain ensemble if sentiment data is missing (columns default to neutral 0)."""
+    name = "ensemble_sent"
+
+    def prepare(self, df):
+        d = compute_indicators(df, self.p)
+        cols = ("funding", "funding_z", "basis", "basis_z", "fng_n", "sent_score")
+        try:
+            import sentiment as S
+            sc = S.build_sentiment_columns(self.symbol, self.timeframe, d.index, d["close"], self.p)
+            for c in cols:
+                d[c] = sc[c].to_numpy()
+        except Exception:
+            for c in cols:
+                d[c] = 0.0
+        return d
+
+    def _signal(self, row, price):
+        if not float(self.p.get("sent_enabled", 1.0)):
+            return super()._signal(row, price)
+        dec = ensemble_decide(row, self.p)
+        ss = float(row.get("sent_score") or 0.0)      # bullish score in [-1,1]
+        fz = float(row.get("funding_z") or 0.0)        # funding crowding z-score
+        tilt = float(self.p.get("sent_tilt", 0.15))
+        long_thr = self.p["enter_thr"] - tilt * max(0.0, ss)     # bullish sentiment -> easier long
+        short_thr = self.p["exit_thr"] + tilt * max(0.0, -ss)    # bearish sentiment -> easier short
+        if dec.score >= long_thr:
+            d = "long"
+        elif dec.score <= short_thr:
+            d = "short"
+        else:
+            return "flat", None, {"score": dec.score, "sent": round(ss, 2), "regime": dec.regime}
+        veto = float(self.p.get("sent_veto", 0.0))
+        if veto > 0 and ((d == "long" and ss <= -veto) or (d == "short" and ss >= veto)):
+            return "flat", None, {"score": dec.score, "sent": round(ss, 2), "veto": True}
+        conf = 1.0
+        if (d == "long" and fz >= self.p.get("sent_fade_z", 2.0)) or \
+           (d == "short" and fz <= -self.p.get("sent_fade_z", 2.0)):
+            conf *= float(self.p.get("sent_fade_floor", 0.4))    # crowded same-direction -> fade
+        size = float(self.p.get("sent_size", 0.3))
+        agree = (ss > 0 and d == "long") or (ss < 0 and d == "short")
+        conf *= (1.0 + size * abs(ss)) if agree else max(0.2, 1.0 - size * abs(ss))
+        atr = row["atr"] if not pd.isna(row.get("atr")) else price * 0.03
+        meta = {"score": round(dec.score, 3), "sent": round(ss, 2), "fz": round(fz, 2),
+                "conf": round(conf, 3), "regime": dec.regime}
+        if d == "long":
+            return "long", price - self.p["stop_atr"] * atr, meta
+        return "short", price + self.p["stop_atr"] * atr, meta
+
+
 class BreakoutStrategy(Strategy):
     """Donchian channel breakout (turtle-style). Long on break of the N-bar high, short on the
     N-bar low. (Also showed no OOS edge on majors — real use is for inefficient/new coins.)"""
@@ -193,7 +250,8 @@ class DirStrategy(_MLBase):
         return "short", price + self.p["stop_atr"] * atr, meta
 
 
-REGISTRY = {s.name: s for s in (EnsembleStrategy, BreakoutStrategy, MetaStrategy, DirStrategy)}
+REGISTRY = {s.name: s for s in (EnsembleStrategy, SentEnsembleStrategy, BreakoutStrategy,
+                                MetaStrategy, DirStrategy)}
 
 
 def get_strategy(name: str, params: dict) -> Strategy:

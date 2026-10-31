@@ -182,6 +182,20 @@ class PaperFutures:
         row = self.db.execute("SELECT MAX(equity) FROM equity").fetchone()
         return float(row[0]) if row and row[0] is not None else None
 
+    def recent_peak(self, hours: float) -> float | None:
+        """Highest equity over the last `hours` (a ROLLING high-water mark). Used by the equity-curve
+        brake so a stale all-time peak can't freeze the bot forever: once equity stabilises, the
+        rolling peak decays toward it and the brake releases. Falls back to the all-time peak if the
+        window is empty, and never below current balance."""
+        if not hours or hours <= 0:
+            return self.peak_equity()
+        from datetime import timedelta
+        cut = (datetime.now(timezone.utc) - timedelta(hours=float(hours))).isoformat(timespec="seconds")
+        row = self.db.execute("SELECT MAX(equity) FROM equity WHERE ts>=?", (cut,)).fetchone()
+        if row and row[0] is not None:
+            return float(row[0])
+        return self.peak_equity() or self.balance
+
     def snapshot(self, prices: dict[str, float]):
         eq = self.equity(prices)
         for sym, px in prices.items():

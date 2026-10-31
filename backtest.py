@@ -15,6 +15,7 @@ to a one-symbol sweep, and per-symbol is the honest way to read an edge).
 from __future__ import annotations
 
 import math
+from collections import deque
 
 import ccxt
 import pandas as pd
@@ -105,6 +106,22 @@ class _Sim:
             self.close(sym, price, "LIQUIDATION")
             return True
         return False
+
+
+def _peak_window(risk: RiskEngine):
+    """Rolling-peak window as a Timedelta, or None for an all-time running peak (brake_peak_hours=0)."""
+    h = float(risk.r.get("brake_peak_hours", 120.0) or 0.0)
+    return pd.Timedelta(hours=h) if h > 0 else None
+
+
+def _roll_peak(pk: deque, ts, eq: float, window) -> float:
+    """Append (ts, eq) and return the max equity within `window` of ts — the live bot's
+    broker.recent_peak() behaviour, so the equity brake matches live exactly."""
+    pk.append((ts, eq))
+    if window is not None:
+        while pk and (ts - pk[0][0]) > window:
+            pk.popleft()
+    return max(e for _, e in pk)
 
 
 def _manage(sim: _Sim, sym, row, price, p) -> bool:
@@ -241,7 +258,7 @@ def run_backtest(symbol: str, timeframe: str, strategy: str, params: dict, risk_
     warmup = int(max([params.get(k, 0) or 0 for k in win_keys] + [50])) + 5
 
     curve: list = []
-    peak = start_balance                      # running equity peak for the #2 equity-curve brake
+    pk, peak_win = deque(), _peak_window(risk)   # time-windowed rolling peak (#2 brake)
     n = len(ind)
     for i in range(min(warmup, n), n):
         row = ind.iloc[i]
@@ -251,7 +268,7 @@ def run_backtest(symbol: str, timeframe: str, strategy: str, params: dict, risk_
         _apply_funding(sim, symbol, price, rate, tf_hours)
         closed = _manage(sim, symbol, row, price, params)
         eq_now = sim.equity({symbol: price})
-        peak = max(peak, eq_now)
+        peak = _roll_peak(pk, ind.index[i], eq_now, peak_win)
         try:
             direction, stop, meta = strat.signal(row, price)
         except Exception:
@@ -322,7 +339,7 @@ def simulate_portfolio(frames: dict, common, strategy: str, params: dict, risk_c
     sim = _Sim(start_balance, taker_fee, risk.r["maint_margin"])
 
     curve, syms = [], list(frames)
-    peak = start_balance                      # running equity peak for the #2 equity-curve brake
+    pk, peak_win = deque(), _peak_window(risk)   # time-windowed rolling peak (#2 brake)
     for i in range(max(i0, 0), i1):
         pricemap = {}
         for sym in syms:
@@ -330,7 +347,7 @@ def simulate_portfolio(frames: dict, common, strategy: str, params: dict, risk_c
             if not math.isnan(price):
                 pricemap[sym] = price
         eq_now = sim.equity(pricemap) if pricemap else sim.balance
-        peak = max(peak, eq_now)
+        peak = _roll_peak(pk, common[i], eq_now, peak_win)
         for sym in list(pricemap):
             row = frames[sym].iloc[i]
             price = pricemap[sym]

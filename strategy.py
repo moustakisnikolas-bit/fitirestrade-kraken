@@ -78,6 +78,17 @@ DEFAULT_PARAMS: dict = {
     "guard_vol_target": 1.0,     # 1=on, 0=off
     "guard_atr_target": 0.02,    # target ATR/price for full size
     "guard_vol_floor": 0.35,     # never shrink size below this fraction
+    # SENTIMENT overlay (strategy 'ensemble_sent'; see docs/ml/phase-7-sentiment-trading.md)
+    "sent_enabled": 1.0,         # 1=apply sentiment overlay, 0=behave like plain ensemble
+    "sent_tilt": 0.15,           # agreeing sentiment lowers the entry bar by up to this (easier entry)
+    "sent_size": 0.30,           # +/- position-size tilt from sentiment agreement
+    "sent_fade_z": 2.0,          # fade a same-direction entry when funding z-score is this crowded
+    "sent_fade_floor": 0.4,      # size multiplier applied to a faded (over-crowded) entry
+    "sent_veto": 0.0,            # >0: hard-skip entries whose sentiment opposes beyond this score
+    "sent_w_funding": 0.5,       # composite weights: funding / basis / fear-greed
+    "sent_w_basis": 0.3,
+    "sent_w_fng": 0.2,
+    "sent_z_win": 96,            # rolling window (bars) for funding/basis z-scores
 }
 
 
