@@ -45,6 +45,45 @@ def _folds(n: int):
     return [(lo + k * width, lo + (k + 1) * width) for k in range(N_FOLDS)], holdout_start
 
 
+def _alpha_t(frames, common, strategy, params, risk, tf, start_balance, fee, rates, a, b):
+    """Beta-adjusted OOS alpha t-stat vs an equal-weight buy&hold baseline over [a, b).
+    t > 2 means the config has a statistically significant edge that is NOT merely market
+    exposure (regress strategy log-returns on baseline log-returns; the intercept is alpha).
+    Returns (alpha_t, beta), or (None, None) when the window is too short to judge."""
+    import numpy as np
+    _, curve = simulate_portfolio(frames, common, strategy, params, risk, tf,
+                                  start_balance, fee, rates, a, b)
+    strat_eq = np.array([e for _, e in curve], float)
+    syms = list(frames)
+    px0 = {}
+    for s in syms:
+        col = frames[s]["close"].iloc[a:b]
+        col = col[~col.isna()]
+        px0[s] = float(col.iloc[0]) if len(col) else None
+    base = []
+    for i in range(a, b):
+        rr = [frames[s]["close"].iloc[i] / px0[s] for s in syms
+              if px0[s] and not np.isnan(frames[s]["close"].iloc[i])]
+        if rr:
+            base.append(start_balance * float(np.mean(rr)))
+    base = np.array(base, float)
+    m = min(len(strat_eq), len(base))
+    if m < 40:
+        return None, None
+    strat_eq, base = strat_eq[:m], base[:m]
+    rs = np.diff(np.log(np.clip(strat_eq, 1e-6, None)))
+    rb = np.diff(np.log(np.clip(base, 1e-6, None)))
+    if len(rs) < 20 or rs.std() == 0:
+        return None, None
+    X = np.vstack([np.ones_like(rb), rb]).T
+    beta, *_ = np.linalg.lstsq(X, rs, rcond=None)
+    resid = rs - X @ beta
+    dof = max(len(rs) - 2, 1)
+    cov = (resid @ resid) / dof * np.linalg.inv(X.T @ X)
+    se = np.sqrt(np.diag(cov))
+    return float(beta[0] / (se[0] + 1e-18)), float(beta[1])
+
+
 def _score(frames, common, strategy, params, risk_cfg, tf, start_balance, fee, rates, folds) -> float:
     cals = []
     for a, b in folds:
@@ -108,6 +147,13 @@ def optimize(symbols, timeframe, strategy, base_params, base_risk, start_balance
     # the real verdict: best config on the untouched holdout, vs the current config on the same holdout
     holdout_best = _slice(best_params, best_risk, holdout_start, n)
     holdout_base = _slice(base_params, base_risk, holdout_start, n)
+    # gold-standard edge test: beta-adjusted alpha t-stat on the untouched holdout (t>2 = real edge)
+    at_b, bt_b = _alpha_t(frames, common, strategy, best_params, best_risk, timeframe,
+                          start_balance, fee, rates, holdout_start, n)
+    at_c, bt_c = _alpha_t(frames, common, strategy, base_params, base_risk, timeframe,
+                          start_balance, fee, rates, holdout_start, n)
+    holdout_best["alpha_t"], holdout_best["beta"] = at_b, bt_b
+    holdout_base["alpha_t"], holdout_base["beta"] = at_c, bt_c
     try:
         import optuna.importance as imp
         importance = {k: round(v, 3) for k, v in imp.get_param_importances(study).items()}
@@ -162,8 +208,8 @@ def main():
     print(f"\n=== OPTUNA {rec['generated_at']} | {strat} {tf} | {rec['n_trials']} trials ===")
     print(f"  study median Calmar (OOS folds): {rec['study_metric_median_calmar']}")
     hb, hc = rec["holdout_best"], rec["holdout_current"]
-    print(f"  HOLDOUT (untouched)   best: ret {hb['return']}%  PF {hb['pf']}  maxDD {hb['maxdd']}%  trades {hb['trades']}")
-    print(f"  HOLDOUT (untouched) current: ret {hc['return']}%  PF {hc['pf']}  maxDD {hc['maxdd']}%  trades {hc['trades']}")
+    print(f"  HOLDOUT (untouched)   best: ret {hb['return']}%  PF {hb['pf']}  maxDD {hb['maxdd']}%  trades {hb['trades']}  alpha_t {hb.get('alpha_t')}")
+    print(f"  HOLDOUT (untouched) current: ret {hc['return']}%  PF {hc['pf']}  maxDD {hc['maxdd']}%  trades {hc['trades']}  alpha_t {hc.get('alpha_t')}")
     if rec["overfit_warning"]:
         print("  ** OVERFIT WARNING: great in-study but negative on holdout — do NOT apply. **")
     print(f"  best params: {rec['best_params']}")
