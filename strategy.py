@@ -89,6 +89,9 @@ DEFAULT_PARAMS: dict = {
     "sent_w_basis": 0.3,
     "sent_w_fng": 0.2,
     "sent_z_win": 96,            # rolling window (bars) for funding/basis z-scores
+    # #3 structural funding-fade strategy ('funding_fade')
+    "ff_z": 1.5,                 # trade when |funding z-score| exceeds this (contrarian to the crowd)
+    "ff_exit_z": 0.5,            # (reserved) normalise exit band
 }
 
 

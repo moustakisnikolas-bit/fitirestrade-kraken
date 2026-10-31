@@ -135,6 +135,28 @@ class SentEnsembleStrategy(EnsembleStrategy):
         return "short", price + self.p["stop_atr"] * atr, meta
 
 
+class FundingFadeStrategy(SentEnsembleStrategy):
+    """#3 Structural edge: fade crowded funding. Very negative funding z (shorts crowded, longs get
+    PAID the funding) -> go long; very positive (longs crowded, shorts paid) -> go short. A documented
+    crypto-perp carry/mean-reversion effect, independent of TA. Reuses SentEnsembleStrategy.prepare()
+    for the funding_z column. ATR stop; guards (regime/vol) still apply via base.signal."""
+    name = "funding_fade"
+
+    def _signal(self, row, price):
+        fz = float(row.get("funding_z") or 0.0)
+        z = float(self.p.get("ff_z", 1.5))
+        follow = float(self.p.get("ff_follow", 0.0)) >= 1.0   # 0=fade crowd, 1=follow crowd/trend
+        atr = row["atr"] if not pd.isna(row.get("atr")) else price * 0.03
+        s = self.p.get("stop_atr", 2.5)
+        long_cond = (fz >= z) if follow else (fz <= -z)
+        short_cond = (fz <= -z) if follow else (fz >= z)
+        if long_cond:
+            return "long", price - s * atr, {"fz": round(fz, 2)}
+        if short_cond:
+            return "short", price + s * atr, {"fz": round(fz, 2)}
+        return "flat", None, {"fz": round(fz, 2)}
+
+
 class BreakoutStrategy(Strategy):
     """Donchian channel breakout (turtle-style). Long on break of the N-bar high, short on the
     N-bar low. (Also showed no OOS edge on majors — real use is for inefficient/new coins.)"""
@@ -250,8 +272,8 @@ class DirStrategy(_MLBase):
         return "short", price + self.p["stop_atr"] * atr, meta
 
 
-REGISTRY = {s.name: s for s in (EnsembleStrategy, SentEnsembleStrategy, BreakoutStrategy,
-                                MetaStrategy, DirStrategy)}
+REGISTRY = {s.name: s for s in (EnsembleStrategy, SentEnsembleStrategy, FundingFadeStrategy,
+                                BreakoutStrategy, MetaStrategy, DirStrategy)}
 
 
 def get_strategy(name: str, params: dict) -> Strategy:
