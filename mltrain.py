@@ -114,7 +114,7 @@ def train_symbol(symbol, timeframe, horizon, params, risk_cfg, taker_fee,
     if len(df) < 500:
         raise ValueError(f"not enough history for {symbol} {timeframe}: {len(df)} candles "
                          f"(run mldata.py first)")
-    frame = build_features(df, params)
+    frame = build_features(df, params, symbol, timeframe)
     N = len(frame)
     (mi, mX, my), (di, dX, dy) = build_samples(frame, params, horizon, rr, bk)
 
@@ -189,7 +189,8 @@ def train_symbol(symbol, timeframe, horizon, params, risk_cfg, taker_fee,
         tr = di < purge
         te = di >= cut
         if tr.sum() > 100 and te.sum() > 20:
-            mdl = LGBMClassifier(objective="multiclass", num_class=3, **LGB_PARAMS).fit(dX[tr], dy[tr])
+            mdl = LGBMClassifier(objective="multiclass", num_class=3, class_weight="balanced",
+                                 **LGB_PARAMS).fit(dX[tr], dy[tr])
             pte = mdl.predict(dX[te])
             acc = accuracy_score(dy[te], pte)
             proba_full = mdl.predict_proba(X_all)              # (N,3): [flat,up,down]

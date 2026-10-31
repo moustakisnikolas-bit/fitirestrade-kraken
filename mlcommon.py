@@ -27,12 +27,19 @@ FEATURES = [
     # candle / chart-pattern features (classic TA the model can learn to weight)
     "body_pct", "upper_wick", "lower_wick", "engulf", "wick_sig",
     "trend_struct", "range_pos", "vol_z",
+    # derivatives-positioning sentiment — the signals that actually drive PERP direction and that
+    # pure TA can't see (funding crowding, spot-perp basis, composite). Require symbol+timeframe.
+    "funding_z", "basis_z", "sent_score",
 ]
 
 
-def build_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+def build_features(df: pd.DataFrame, params: dict,
+                   symbol: str | None = None, timeframe: str | None = None) -> pd.DataFrame:
     """Return a frame carrying BOTH the raw indicator columns (needed by ensemble_decide and for
-    the ATR stop) AND the engineered FEATURES columns, on the same index as the input bars."""
+    the ATR stop) AND the engineered FEATURES columns, on the same index as the input bars.
+    When symbol/timeframe are given, the derivatives-sentiment features are filled from history.db
+    (via sentiment.build_sentiment_columns); otherwise they default to neutral 0 so the matrix is
+    always complete and old symbol-agnostic callers keep working."""
     ind = compute_indicators(df, params)
     close = ind["close"]
     out = ind.copy()
@@ -74,6 +81,18 @@ def build_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
         out["fng"] = align_fng(out.index)       # market Fear & Greed, normalised [-1,1], 0 if absent
     except Exception:
         out["fng"] = 0.0
+
+    # ---- derivatives-positioning sentiment (funding crowding / spot-perp basis / composite) ----
+    for c in ("funding_z", "basis_z", "sent_score"):
+        out[c] = 0.0
+    if symbol:
+        try:
+            from sentiment import build_sentiment_columns
+            sc = build_sentiment_columns(symbol, timeframe, out.index, out["close"], params)
+            for c in ("funding_z", "basis_z", "sent_score"):
+                out[c] = sc[c].to_numpy()
+        except Exception:
+            pass
     return out
 
 

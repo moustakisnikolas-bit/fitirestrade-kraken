@@ -169,7 +169,7 @@ class _MLBase(Strategy):
         self._warned = False
 
     def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
-        return build_features(df, self.p)
+        return build_features(df, self.p, self.symbol, self.timeframe)
 
     def _model(self):
         if not self.symbol or not self.timeframe:
